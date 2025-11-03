@@ -1,115 +1,52 @@
 import os
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.enums import ParseMode
-from aiogram.client.default import DefaultBotProperties
+import asyncio
+from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
-from fastapi import FastAPI, Request
-import uvicorn
+from aiohttp import web
 
-# === Переменные окружения ===
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
-CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# === НАСТРОЙКИ ===
+BOT_TOKEN = os.getenv("BOT_TOKEN")  # токен хранится в Render → Environment
+ADMIN_IDS = [955483416, 2025057922]  # твои ID админов
+WEBHOOK_HOST = "https://tg-suggesttf141-bot-1.onrender.com"  # URL Render-проекта
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
 
-# === Инициализация бота с aiogram 3.7+ ===
-bot = Bot(
-    token=BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
-)
+# === НАСТРОЙКА БОТА ===
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-app = FastAPI()
 
-# === Команда /start ===
+# === ОБРАБОТЧИКИ ===
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
-    await message.answer(
-        "👋 Привет! Отправь сюда своё предложение (текст, фото, видео, голос и т.п.).\n"
-        "После проверки админами оно может попасть в канал анонимно 💬"
-    )
+    await message.answer("👋 Привет! Отправь сообщение, и я передам его админам!")
 
-# === Приём любого контента ===
-@dp.message(F.content_type.in_({"text", "photo", "video", "voice", "document"}))
-async def suggestion_handler(message: types.Message):
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[
-            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve_{message.chat.id}_{message.message_id}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"decline_{message.chat.id}_{message.message_id}")
-        ]]
-    )
-
-    caption = "<b>Новое предложение от пользователя:</b>\n\n"
-    if message.caption:
-        caption += message.caption
-    elif message.text:
-        caption += message.text
-
-    for admin_id in ADMIN_IDS:
-        try:
-            if message.photo:
-                await bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=kb)
-            elif message.video:
-                await bot.send_video(admin_id, message.video.file_id, caption=caption, reply_markup=kb)
-            elif message.voice:
-                await bot.send_voice(admin_id, message.voice.file_id, caption=caption, reply_markup=kb)
-            elif message.document:
-                await bot.send_document(admin_id, message.document.file_id, caption=caption, reply_markup=kb)
-            else:
-                await bot.send_message(admin_id, caption, reply_markup=kb)
-        except Exception as e:
-            print(f"Ошибка при отправке админу {admin_id}: {e}")
-
-    await message.answer("✅ Твоё предложение отправлено на проверку. Спасибо!")
-
-# === Обработка кнопок ===
-@dp.callback_query(F.data.startswith(("approve_", "decline_")))
-async def handle_decision(callback: types.CallbackQuery):
-    data = callback.data.split("_")
-    action, user_id, msg_id = data[0], int(data[1]), int(data[2])
-
-    if action == "approve":
-        try:
-            await bot.copy_message(
-                chat_id=CHANNEL_ID,
-                from_chat_id=user_id,
-                message_id=msg_id
-            )
-            await callback.message.answer("✅ Предложение опубликовано в канал.")
-            try:
-                await bot.send_message(user_id, "🎉 Твоё предложение одобрено и опубликовано анонимно!")
-            except:
-                pass
-        except Exception as e:
-            await callback.message.answer(f"⚠️ Ошибка при публикации: {e}")
+@dp.message()
+async def handle_message(message: types.Message):
+    if message.from_user.id in ADMIN_IDS:
+        await message.answer("👑 Принято, админ!")
     else:
-        await callback.message.answer("❌ Предложение отклонено.")
-        try:
-            await bot.send_message(user_id, "❌ К сожалению, твоё предложение отклонено.")
-        except:
-            pass
+        text = f"💬 Новое сообщение от @{message.from_user.username or 'без ника'}:\n\n{message.text}"
+        for admin in ADMIN_IDS:
+            try:
+                await bot.send_message(admin, text)
+            except Exception as e:
+                print(f"Ошибка отправки админу {admin}: {e}")
+        await message.answer("✅ Твоё сообщение отправлено администрации!")
 
-    await callback.answer()
-
-# === Webhook маршруты для Render ===
-@app.post("/")
-async def webhook(request: Request):
-    update = await request.json()
-    await dp.feed_update(bot, update)
-    return {"ok": True}
-
-@app.on_event("startup")
-async def on_startup():
+# === WEBHOOK ЗАПУСК ===
+async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
-    print("✅ Webhook установлен!")
+    print(f"Webhook установлен: {WEBHOOK_URL}")
 
-@app.on_event("shutdown")
-async def on_shutdown():
+async def on_shutdown(app):
     await bot.delete_webhook()
-    print("🛑 Webhook удалён!")
+    await bot.session.close()
+    print("Webhook удалён и сессия закрыта.")
 
-# === Запуск на Render ===
+app = web.Application()
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
+app.router.add_post(WEBHOOK_PATH, dp.webhook_handler())
+
 if __name__ == "__main__":
-    # Render сам задаёт переменную PORT
-    port = int(os.environ.get("PORT", 8080))
-    uvicorn.run("bot:app", host="0.0.0.0", port=port)
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
