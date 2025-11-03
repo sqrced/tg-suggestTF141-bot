@@ -2,7 +2,7 @@ import os
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.enums import ParseMode
-from aiogram.client import DefaultBotProperties
+from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import CommandStart
 from fastapi import FastAPI, Request
 import uvicorn
@@ -13,14 +13,13 @@ ADMINS = [int(x) for x in os.getenv("ADMINS", "").split(",") if x]
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-# === Инициализация бота с новым синтаксисом aiogram 3.7+ ===
+# === Инициализация бота с новым синтаксисом aiogram 3.x ===
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
 )
 dp = Dispatcher()
 app = FastAPI()
-
 
 # === Команда /start ===
 @dp.message(CommandStart())
@@ -29,7 +28,6 @@ async def start_cmd(message: types.Message):
         "👋 Привет! Отправь сюда своё предложение (текст, фото, видео, голос и т.п.).\n"
         "После проверки админами оно может попасть в канал анонимно 💬"
     )
-
 
 # === Приём любого контента ===
 @dp.message(F.content_type.in_({"text", "photo", "video", "voice", "document"}))
@@ -65,7 +63,6 @@ async def suggestion_handler(message: types.Message):
 
     await message.answer("✅ Твоё предложение отправлено на проверку. Спасибо!")
 
-
 # === Обработка кнопок ===
 @dp.callback_query(F.data.startswith(("approve_", "decline_")))
 async def handle_decision(callback: types.CallbackQuery):
@@ -73,7 +70,6 @@ async def handle_decision(callback: types.CallbackQuery):
     action, user_id, msg_id = data[0], int(data[1]), int(data[2])
 
     if action == "approve":
-        # Публикуем в канал
         try:
             await bot.copy_message(
                 chat_id=CHANNEL_ID,
@@ -96,7 +92,6 @@ async def handle_decision(callback: types.CallbackQuery):
 
     await callback.answer()
 
-
 # === Webhook маршруты для Render ===
 @app.post("/")
 async def webhook(request: Request):
@@ -104,20 +99,18 @@ async def webhook(request: Request):
     await dp.feed_update(bot, update)
     return {"ok": True}
 
-
 @app.on_event("startup")
 async def on_startup():
     await bot.set_webhook(WEBHOOK_URL)
     print("✅ Webhook установлен!")
-
 
 @app.on_event("shutdown")
 async def on_shutdown():
     await bot.delete_webhook()
     print("🛑 Webhook удалён!")
 
-
 # === Запуск (Render) ===
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
-    uvicorn.run("bot:app", host="0.0.0.0", port=port)
+    uvicor
+::contentReference[oaicite:1]{index=1}
