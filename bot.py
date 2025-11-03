@@ -1,52 +1,76 @@
 import os
-import asyncio
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
 # === НАСТРОЙКИ ===
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # токен хранится в Render → Environment
-ADMIN_IDS = [955483416, 2025057922]  # твои ID админов
-WEBHOOK_HOST = "https://tg-suggesttf141-bot.onrender.com"  # URL Render-проекта
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = [955483416, 2025057922]  # твои ID
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", 0))  # ID канала
+WEBHOOK_HOST = "https://tg-suggesttf141-bot.onrender.com"
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
 
-# === НАСТРОЙКА БОТА ===
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# === ОБРАБОТЧИКИ ===
+# === /start ===
 @dp.message(CommandStart())
 async def start_cmd(message: types.Message):
-    await message.answer("👋 Привет! Отправь сообщение, и я передам его админам!")
+    await message.answer("👋 Привет! Отправь своё предложение.")
 
-@dp.message()
-async def handle_message(message: types.Message):
-    if message.from_user.id in ADMIN_IDS:
-        await message.answer("👑 Принято, админ!")
-    else:
-        text = f"💬 Новое сообщение от @{message.from_user.username or 'без ника'}:\n\n{message.text}"
-        for admin in ADMIN_IDS:
-            try:
-                await bot.send_message(admin, text)
-            except Exception as e:
-                print(f"Ошибка отправки админу {admin}: {e}")
-        await message.answer("✅ Твоё сообщение отправлено администрации!")
+# === Приём сообщений ===
+@dp.message(F.content_type.in_(
+    ["text", "photo", "video", "voice", "document", "animation"]
+))
+async def handle_suggestion(message: types.Message):
+    user = message.from_user
+    sender = f"👤 @{user.username or 'без_ника'} (ID: {user.id})"
+    caption = message.caption or message.text or "(без текста)"
+    text_to_send = f"💬 Предложение от {sender}:\n\n{caption}"
 
-# === WEBHOOK ЗАПУСК ===
-async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
-    print(f"Webhook установлен: {WEBHOOK_URL}")
+    # Кнопки для админов
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Одобрить", callback_data=f"approve_{user.id}")
+    kb.button(text="❌ Отклонить", callback_data=f"decline_{user.id}")
+    kb.adjust(2)
 
-async def on_shutdown(app):
-    await bot.delete_webhook()
-    await bot.session.close()
-    print("Webhook удалён и сессия закрыта.")
+    # Отправляем контент админам
+    for admin_id in ADMIN_IDS:
+        try:
+            if message.text:
+                await bot.send_message(admin_id, text_to_send, reply_markup=kb.as_markup())
+            elif message.photo:
+                await bot.send_photo(admin_id, message.photo[-1].file_id, caption=text_to_send, reply_markup=kb.as_markup())
+            elif message.video:
+                await bot.send_video(admin_id, message.video.file_id, caption=text_to_send, reply_markup=kb.as_markup())
+            elif message.voice:
+                await bot.send_voice(admin_id, message.voice.file_id, caption=text_to_send, reply_markup=kb.as_markup())
+            elif message.document:
+                await bot.send_document(admin_id, message.document.file_id, caption=text_to_send, reply_markup=kb.as_markup())
+            elif message.animation:
+                await bot.send_animation(admin_id, message.animation.file_id, caption=text_to_send, reply_markup=kb.as_markup())
+        except Exception as e:
+            print(f"Ошибка при отправке админу {admin_id}: {e}")
 
-app = web.Application()
-app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown)
-app.router.add_post(WEBHOOK_PATH, dp.webhook_handler())
+    await message.answer("✅ Твоё предложение отправлено на рассмотрение администрации!")
 
-if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
+# === Обработка кнопок от админов ===
+@dp.callback_query(F.data.startswith("approve_"))
+async def approve_post(callback: types.CallbackQuery):
+    user_id = int(callback.data.split("_")[1])
+
+    # Получаем оригинальное сообщение
+    msg = callback.message
+    content_type = msg.content_type
+
+    # Публикуем в канал без приписок
+    try:
+        if content_type == "text":
+            await bot.send_message(CHANNEL_ID, msg.text)
+        elif content_type == "photo":
+            await bot.send_photo(CHANNEL_ID, msg.photo[-1].file_id, caption=msg.caption)
+        elif content_type == "video":
+            await bot.send_video(CHANNEL_
