@@ -9,11 +9,11 @@ import uvicorn
 
 # === Переменные окружения ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMINS = [int(x) for x in os.getenv("ADMINS", "").split(",") if x]
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x]
 CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 
-# === Инициализация бота с новым синтаксисом aiogram 3.7+ ===
+# === Инициализация бота с aiogram 3.7+ ===
 bot = Bot(
     token=BOT_TOKEN,
     default=DefaultBotProperties(parse_mode=ParseMode.HTML)
@@ -39,14 +39,13 @@ async def suggestion_handler(message: types.Message):
         ]]
     )
 
-    caption = f"<b>Новое предложение от пользователя:</b>\n\n"
+    caption = "<b>Новое предложение от пользователя:</b>\n\n"
     if message.caption:
         caption += message.caption
     elif message.text:
         caption += message.text
 
-    # Отправка предложения всем админам
-    for admin_id in ADMINS:
+    for admin_id in ADMIN_IDS:
         try:
             if message.photo:
                 await bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=kb)
@@ -109,7 +108,8 @@ async def on_shutdown():
     await bot.delete_webhook()
     print("🛑 Webhook удалён!")
 
-# === Запуск (Render) ===
+# === Запуск на Render ===
 if __name__ == "__main__":
+    # Render сам задаёт переменную PORT
     port = int(os.environ.get("PORT", 8080))
     uvicorn.run("bot:app", host="0.0.0.0", port=port)
