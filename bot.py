@@ -1,53 +1,51 @@
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
 import os
+import asyncio
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = [int(i) for i in os.getenv("ADMIN_IDS").split(",")]
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+CHANNEL_ID = int(os.getenv("CHANNEL_ID", "0"))
 
 bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+dp = Dispatcher()
 
-def approve_keyboard(caption, file_id=None, type_=None):
-    buttons = [
-        types.InlineKeyboardButton("✅ Одобрить", callback_data=f"approve|{type_}|{file_id}|{caption}"),
-        types.InlineKeyboardButton("❌ Отклонить", callback_data="reject")
-    ]
-    return types.InlineKeyboardMarkup().add(*buttons)
+@dp.message(CommandStart())
+async def start(message: Message):
+    await message.answer("👋 Привет! Отправь сюда предложение, и я передам его администраторам.")
 
-@dp.message_handler(content_types=["text", "photo", "video"])
-async def suggest(message: types.Message):
-    caption = message.caption or message.text or ""
-    user = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
-    for admin in ADMIN_IDS:
-        if message.photo:
-            file_id = message.photo[-1].file_id
-            await bot.send_photo(admin, file_id, caption=f"📩 От {user}:\n\n{caption}", reply_markup=approve_keyboard(caption, file_id, "photo"))
-        elif message.video:
-            file_id = message.video.file_id
-            await bot.send_video(admin, file_id, caption=f"📩 От {user}:\n\n{caption}", reply_markup=approve_keyboard(caption, file_id, "video"))
-        else:
-            await bot.send_message(admin, f"📩 От {user}:\n\n{caption}", reply_markup=approve_keyboard(caption))
-    await message.reply("✅ Предложка отправлена на проверку!")
+@dp.message(F.text)
+async def handle_suggestion(message: Message):
+    text = message.text
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{message.from_user.id}:{text}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{message.from_user.id}")
+        ]
+    ])
+    for admin_id in ADMIN_IDS:
+        await bot.send_message(admin_id, f"📩 Новое предложение от @{message.from_user.username or 'без ника'}:\n\n{text}", reply_markup=kb)
+    await message.reply("✅ Твое предложение отправлено на проверку!")
 
-@dp.callback_query_handler(lambda c: c.data.startswith("approve"))
-async def approve(callback: types.CallbackQuery):
-    _, type_, file_id, caption = callback.data.split("|", 3)
-    if type_ == "photo":
-        await bot.send_photo(CHANNEL_ID, file_id, caption=caption)
-    elif type_ == "video":
-        await bot.send_video(CHANNEL_ID, file_id, caption=caption)
-    else:
-        await bot.send_message(CHANNEL_ID, caption)
-    await callback.message.edit_text("✅ Пост опубликован!")
-    await callback.answer("✅ Опубликовано!")
+@dp.callback_query(F.data.startswith("approve"))
+async def approve_callback(callback: types.CallbackQuery):
+    _, user_id, text = callback.data.split(":", 2)
+    await bot.send_message(CHANNEL_ID, f"✨ Новое предложение:\n\n{text}")
+    await callback.message.edit_text("✅ Одобрено и опубликовано!")
 
-@dp.callback_query_handler(lambda c: c.data == "reject")
-async def reject(callback: types.CallbackQuery):
-    await callback.message.edit_text("❌ Предложка отклонена.")
-    await callback.answer("❌ Отклонено")
+@dp.callback_query(F.data.startswith("reject"))
+async def reject_callback(callback: types.CallbackQuery):
+    _, user_id = callback.data.split(":")
+    await callback.message.edit_text("❌ Отклонено.")
+    try:
+        await bot.send_message(user_id, "❌ Твое предложение отклонено.")
+    except:
+        pass
+
+async def main():
+    print("🤖 Бот запущен...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    print("🤖 Бот запущен...")
-    executor.start_polling(dp, skip_updates=True)
+    asyncio.run(main())
