@@ -115,7 +115,7 @@ async def handle_user_message(message: types.Message):
         except Exception as e:
             print(f"Ошибка отправки админу {admin_id}: {e}")
 
-    await message.answer("✅ Ваше предложение отправлено на рассмотрение модераторам (анонимно). Спасибо!")
+    await message.answer("🕙 Ваше предложение отправлено на рассмотрение модераторам (анонимно). Спасибо!")
 
 @dp.callback_query.register(lambda c: c.data and (c.data.startswith("approve:") or c.data.startswith("reject:")))
 async def handle_moderation_callback(callback: types.CallbackQuery):
