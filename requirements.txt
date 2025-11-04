@@ -1,2 +1,4 @@
-aiogram==3.10.0
-aiohttp
+aiogram==3.2.0
+fastapi==0.95.2
+uvicorn[standard]==0.21.1
+aiosqlite==0.18.0
