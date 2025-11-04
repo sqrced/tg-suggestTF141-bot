@@ -29,7 +29,7 @@ async def suggest(message: types.Message):
             await bot.send_video(admin, file_id, caption=f"📩 От {user}:\n\n{caption}", reply_markup=approve_keyboard(caption, file_id, "video"))
         else:
             await bot.send_message(admin, f"📩 От {user}:\n\n{caption}", reply_markup=approve_keyboard(caption))
-    await message.reply("🕙 Предложка отправлена на проверку!")
+    await message.reply("🕙 Предложение отправлено на проверку!")
 
 @dp.callback_query_handler(lambda c: c.data.startswith("approve"))
 async def approve(callback: types.CallbackQuery):
@@ -45,7 +45,7 @@ async def approve(callback: types.CallbackQuery):
 
 @dp.callback_query_handler(lambda c: c.data == "reject")
 async def reject(callback: types.CallbackQuery):
-    await callback.message.edit_text("❌ Предложка отклонена.")
+    await callback.message.edit_text("❌ Предложение отклонено.")
     await callback.answer("❌ Отклонено")
 
 if __name__ == "__main__":
