@@ -1,121 +1,207 @@
+# main.py
 import os
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.client.default import DefaultBotProperties
-from fastapi import FastAPI, Request
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 import asyncio
+from datetime import datetime
+from typing import Optional
 
-# Токен бота и ID админов / канала
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(",")))  # Пример: 123456,789012
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))  # ID канала, куда бот постит предложения
+from fastapi import FastAPI, Request
+import aiosqlite
+import uvicorn
 
-# --- НАСТРОЙКА БОТА ---
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.enums import ContentType
+
+# --------------------------
+# Настройки через переменные окружения
+# --------------------------
+TOKEN = os.getenv("TOKEN")  # токен бота
+ADMIN_IDS = os.getenv("ADMIN_IDS", "")  # через запятую, например: "123456789,987654321"
+CHANNEL_ID = os.getenv("CHANNEL_ID")  # например @your_channel или -1001234567890
+
+if not TOKEN or not ADMIN_IDS or not CHANNEL_ID:
+    raise RuntimeError("Пожалуйста, установи переменные окружения: TOKEN, ADMIN_IDS, CHANNEL_ID")
+
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS.split(",") if x.strip()]
+DB_PATH = os.getenv("DB_PATH", "proposals.db")
+
+bot = Bot(token=TOKEN, parse_mode="HTML")
 dp = Dispatcher()
 
-# --- FASTAPI ДЛЯ РЕНДЕРА ---
 app = FastAPI()
+_polling_task: Optional[asyncio.Task] = None
 
-# Путь вебхука
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = os.getenv("RENDER_EXTERNAL_URL", "") + WEBHOOK_PATH
+# --------------------------
+# Database helpers
+# --------------------------
+async def init_db():
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS proposals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            from_chat_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL
+        );
+        """)
+        await db.commit()
 
-# Клавиатура для админов
-def get_admin_kb(user_id, message_type, file_id=None, caption=None):
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve|{user_id}|{message_type}|{file_id or 'none'}"),
-            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject|{user_id}")
+async def save_proposal(user_id: int, from_chat_id: int, message_id: int) -> int:
+    created_at = datetime.utcnow().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "INSERT INTO proposals (user_id, from_chat_id, message_id, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, from_chat_id, message_id, created_at)
+        )
+        await db.commit()
+        return cur.lastrowid
+
+async def get_proposal(proposal_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute(
+            "SELECT id, user_id, from_chat_id, message_id, status, created_at FROM proposals WHERE id = ?",
+            (proposal_id,)
+        )
+        return await cur.fetchone()
+
+async def update_proposal_status(proposal_id: int, status: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("UPDATE proposals SET status = ? WHERE id = ?", (status, proposal_id))
+        await db.commit()
+
+# --------------------------
+# UI helpers
+# --------------------------
+def moderation_keyboard(proposal_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{proposal_id}"),
+                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{proposal_id}")
+            ]
         ]
-    ])
-    return kb
+    )
 
-# --- ОБРАБОТКА ПРЕДЛОЖЕНИЙ ---
-@dp.message(F.text | F.photo | F.video | F.voice | F.document)
-async def handle_proposal(message: types.Message):
-    user_id = message.from_user.id
-    text = message.caption or message.text or ""
+# --------------------------
+# Handlers
+# --------------------------
+@dp.message.register(
+    content_types=[
+        ContentType.TEXT,
+        ContentType.PHOTO,
+        ContentType.VIDEO,
+        ContentType.VOICE,
+        ContentType.AUDIO,
+        ContentType.DOCUMENT,
+        ContentType.STICKER,
+        ContentType.VIDEO_NOTE,
+    ]
+)
+async def handle_user_message(message: types.Message):
+    proposal_id = await save_proposal(
+        user_id=message.from_user.id,
+        from_chat_id=message.chat.id,
+        message_id=message.message_id
+    )
+
+    preview_text = f"📌 Новое предложение #{proposal_id}\nТип: {message.content_type}\nВремя (UTC): {datetime.utcnow().isoformat()}"
 
     for admin_id in ADMIN_IDS:
-        if message.photo:
-            await bot.send_photo(
-                admin_id,
-                message.photo[-1].file_id,
-                caption=f"📩 Новое предложение:\n\n{text}",
-                reply_markup=get_admin_kb(user_id, "photo", message.photo[-1].file_id, text)
-            )
-        elif message.video:
-            await bot.send_video(
-                admin_id,
-                message.video.file_id,
-                caption=f"📩 Новое предложение:\n\n{text}",
-                reply_markup=get_admin_kb(user_id, "video", message.video.file_id, text)
-            )
-        elif message.voice:
-            await bot.send_voice(
-                admin_id,
-                message.voice.file_id,
-                caption=f"📩 Новое голосовое предложение.",
-                reply_markup=get_admin_kb(user_id, "voice", message.voice.file_id)
-            )
-        elif message.document:
-            await bot.send_document(
-                admin_id,
-                message.document.file_id,
-                caption=f"📩 Новое предложение:\n\n{text}",
-                reply_markup=get_admin_kb(user_id, "document", message.document.file_id, text)
-            )
-        else:
-            await bot.send_message(
-                admin_id,
-                f"📩 Новое предложение:\n\n{text}",
-                reply_markup=get_admin_kb(user_id, "text")
-            )
+        try:
+            await bot.send_message(admin_id, preview_text)
+            await message.copy_to(chat_id=admin_id, reply_markup=moderation_keyboard(proposal_id))
+        except Exception as e:
+            print(f"Ошибка отправки админу {admin_id}: {e}")
 
-    await message.answer("✅ Ваше предложение отправлено на рассмотрение администраторам!")
+    await message.answer("✅ Ваше предложение отправлено на рассмотрение модераторам (анонимно). Спасибо!")
 
-# --- ОБРАБОТКА КНОПОК АДМИНА ---
-@dp.callback_query(F.data.startswith("approve"))
-async def approve_proposal(callback: types.CallbackQuery):
-    _, user_id, msg_type, file_id = callback.data.split("|")
-    user_id = int(user_id)
+@dp.callback_query.register(lambda c: c.data and (c.data.startswith("approve:") or c.data.startswith("reject:")))
+async def handle_moderation_callback(callback: types.CallbackQuery):
+    data = callback.data
+    action, sid = data.split(":")
+    proposal_id = int(sid)
 
-    if msg_type == "photo":
-        await bot.send_photo(CHANNEL_ID, file_id, caption=callback.message.caption.split("\n\n", 1)[-1])
-    elif msg_type == "video":
-        await bot.send_video(CHANNEL_ID, file_id, caption=callback.message.caption.split("\n\n", 1)[-1])
-    elif msg_type == "voice":
-        await bot.send_voice(CHANNEL_ID, file_id)
-    elif msg_type == "document":
-        await bot.send_document(CHANNEL_ID, file_id, caption=callback.message.caption.split("\n\n", 1)[-1])
-    else:
-        text = callback.message.text.split("\n\n", 1)[-1]
-        await bot.send_message(CHANNEL_ID, text)
+    row = await get_proposal(proposal_id)
+    if not row:
+        await callback.answer("❗ Предложение не найдено", show_alert=True)
+        return
 
-    await bot.send_message(user_id, "🎉 Ваше предложение одобрено и опубликовано в канале!")
-    await callback.message.edit_text("✅ Предложение одобрено и опубликовано!")
+    _, user_id, from_chat_id, message_id, status, _ = row
 
-@dp.callback_query(F.data.startswith("reject"))
-async def reject_proposal(callback: types.CallbackQuery):
-    _, user_id = callback.data.split("|")
-    user_id = int(user_id)
-    await bot.send_message(user_id, "❌ Ваше предложение было отклонено администраторами.")
-    await callback.message.edit_text("🚫 Предложение отклонено.")
+    if status != "pending":
+        await callback.answer("Это предложение уже обработано.", show_alert=True)
+        return
 
-# --- FASTAPI СЕРВЕР ДЛЯ РЕНДЕРА ---
+    if action == "approve":
+        try:
+            await bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=from_chat_id, message_id=message_id)
+        except Exception as e:
+            await callback.answer("Ошибка при публикации в канал: " + str(e), show_alert=True)
+            return
+
+        await update_proposal_status(proposal_id, "approved")
+        try:
+            await bot.send_message(user_id, f"✅ Ваше предложение #{proposal_id} одобрено и опубликовано в канале.")
+        except Exception:
+            pass
+        await callback.answer("✔️ Предложение одобрено и опубликовано.")
+        try:
+            await callback.message.edit_text(callback.message.text + "\n\n✅ Одобрено")
+        except Exception:
+            pass
+
+    elif action == "reject":
+        await update_proposal_status(proposal_id, "rejected")
+        try:
+            await bot.send_message(user_id, f"❌ Ваше предложение #{proposal_id} отклонено.")
+        except Exception:
+            pass
+        await callback.answer("Предложение отклонено.")
+        try:
+            await callback.message.edit_text(callback.message.text + "\n\n❌ Отклонено")
+        except Exception:
+            pass
+
+# --------------------------
+# FastAPI endpoints
+# --------------------------
+@app.get("/")
+async def root():
+    return {"status": "ok", "time": datetime.utcnow().isoformat()}
+
+@app.post("/tg-webhook")
+async def telegram_webhook(request: Request):
+    update = types.Update(**await request.json())
+    await dp.process_update(update)
+    return {"ok": True}
+
+# --------------------------
+# Startup / Shutdown
+# --------------------------
 @app.on_event("startup")
 async def on_startup():
-    await bot.set_webhook(WEBHOOK_URL)
-    print("✅ Вебхук установлен:", WEBHOOK_URL)
-
-@app.post(WEBHOOK_PATH)
-async def webhook(request: Request):
-    update = await request.json()
-    await dp.feed_webhook_update(bot, update)
-    return {"ok": True}
+    print("Startup: init DB and start polling")
+    await init_db()
+    global _polling_task
+    loop = asyncio.get_event_loop()
+    _polling_task = loop.create_task(dp.start_polling(bot, allowed_updates=types.AllowedUpdates.MESSAGE | types.AllowedUpdates.CALLBACK_QUERY))
 
 @app.on_event("shutdown")
 async def on_shutdown():
-    await bot.delete_webhook()
+    print("Shutdown: stopping polling and closing bot")
+    global _polling_task
+    if _polling_task:
+        _polling_task.cancel()
+        try:
+            await _polling_task
+        except asyncio.CancelledError:
+            pass
+    await bot.session.close()
+
+# --------------------------
+# Run (локальный запуск)
+# --------------------------
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
