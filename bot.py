@@ -1,0 +1,108 @@
+import os
+import asyncio
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, InputMediaVideo, InputMediaDocument
+
+# --- Настройки через переменные окружения ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS").split(",")))
+CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher()
+
+# --- Клавиатура модерации ---
+def moderation_kb(user_id: int):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{user_id}"),
+            InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{user_id}")
+        ]
+    ])
+
+# --- /start ---
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    await message.answer(
+        "Привет! Отправь своё предложение.\n"
+        "Можно: текст + фото/видео/документы. Всё одно сообщение — одно предложение."
+    )
+
+# --- Хранилище временных предложений ---
+# Сохраняем медиа для последующей отправки в канал
+pending_suggestions = {}  # {user_id: [types.Message, ...]}
+
+@dp.message()
+async def handle_suggestion(message: types.Message):
+    user_id = message.from_user.id
+    if user_id not in pending_suggestions:
+        pending_suggestions[user_id] = []
+    pending_suggestions[user_id].append(message)
+
+    # Подтверждение пользователю
+    await message.answer("🕙 Ваше предложение отправлено на рассмотрение модераторам.")
+
+    # --- Формируем сообщение для модераторов ---
+    # Капшен для первого медиа или текста
+    caption = message.caption if hasattr(message, "caption") and message.caption else message.text if message.text else ""
+
+    for admin_id in ADMIN_IDS:
+        kb = moderation_kb(user_id)
+        if message.content_type == "text":
+            await bot.send_message(admin_id, f"Новое предложение от пользователя {user_id}:\n\n{caption}", reply_markup=kb)
+        elif message.content_type == "photo":
+            await bot.send_photo(admin_id, message.photo[-1].file_id, caption=caption, reply_markup=kb)
+        elif message.content_type == "video":
+            await bot.send_video(admin_id, message.video.file_id, caption=caption, reply_markup=kb)
+        elif message.content_type == "document":
+            await bot.send_document(admin_id, message.document.file_id, caption=caption, reply_markup=kb)
+        elif message.content_type == "voice":
+            await bot.send_voice(admin_id, message.voice.file_id, caption=caption, reply_markup=kb)
+
+# --- Модерация ---
+@dp.callback_query()
+async def moderation_callback(call: types.CallbackQuery):
+    action, user_id = call.data.split(":")
+    user_id = int(user_id)
+    messages = pending_suggestions.get(user_id, [])
+
+    if not messages:
+        await call.answer("Предложение не найдено или уже обработано.")
+        return
+
+    # --- Одобрение ---
+    if action == "approve":
+        media_group = []
+        text_sent = False
+        for msg in messages:
+            if msg.content_type == "text" and not text_sent:
+                await bot.send_message(CHANNEL_ID, msg.text)
+                text_sent = True
+            elif msg.content_type == "photo":
+                media_group.append(InputMediaPhoto(media=msg.photo[-1].file_id, caption=msg.caption if msg.caption else None))
+            elif msg.content_type == "video":
+                media_group.append(InputMediaVideo(media=msg.video.file_id, caption=msg.caption if msg.caption else None))
+            elif msg.content_type == "document":
+                media_group.append(InputMediaDocument(media=msg.document.file_id, caption=msg.caption if msg.caption else None))
+            elif msg.content_type == "voice":
+                await bot.send_voice(CHANNEL_ID, msg.voice.file_id, caption=msg.caption if msg.caption else "")
+
+        if media_group:
+            await bot.send_media_group(CHANNEL_ID, media_group)
+
+        await bot.send_message(user_id, "Ваше предложение одобрено и опубликовано!")
+        pending_suggestions.pop(user_id, None)
+        await call.message.edit_reply_markup(None)
+        await call.answer("Вы одобрили предложение.")
+
+    # --- Отклонение ---
+    elif action == "reject":
+        await bot.send_message(user_id, "К сожалению, ваше предложение отклонено.")
+        pending_suggestions.pop(user_id, None)
+        await call.message.edit_reply_markup(None)
+        await call.answer("Вы отклонили предложение.")
+
+# --- Запуск бота ---
+if __name__ == "__main__":
+    asyncio.run(dp.start_polling(bot))
