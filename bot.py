@@ -1,5 +1,5 @@
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
+from aiogram.utils
 import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
