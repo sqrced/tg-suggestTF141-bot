@@ -107,9 +107,14 @@ async def moderation_callback(call: types.CallbackQuery):
 
 # --- Webhook обработка ---
 async def handle_webhook(request):
-    update = types.Update(**await request.json())
-    await dp.process_update(update)
-    return web.Response()
+    data = await request.json()
+    print("Incoming update:", data)  # лог всех обновлений
+    try:
+        update = types.Update(**data)
+        await dp.process_update(update)
+    except Exception as e:
+        print("Ошибка при обработке update:", e)  # лог ошибки
+    return web.Response(text="ok")  # обязательно вернуть текст
 
 app = web.Application()
 app.router.add_post(f"/{BOT_TOKEN}", handle_webhook)
