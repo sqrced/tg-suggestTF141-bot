@@ -3,6 +3,7 @@ services:
     name: tg-suggest-bot
     env: python
     plan: free
+    pythonVersion: 3.11.8        # ✅ исправление
     buildCommand: |
       pip install -r requirements.txt
     startCommand: |
