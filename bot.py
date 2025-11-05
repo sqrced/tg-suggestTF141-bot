@@ -92,7 +92,6 @@ async def handle_proposal(message: Message):
             logger.exception(f"Ошибка при уведомлении админа {admin}: {e}")
 
 # --- Callback от админов ---
-# Используем универсальный хендлер для callback_query — фильтрация внутри функции.
 @dp.callback_query()
 async def handle_admin_callback(query: CallbackQuery):
     data = query.data or ""
@@ -100,7 +99,6 @@ async def handle_admin_callback(query: CallbackQuery):
 
     # Игнорируем посторонние callback'и
     if not (data.startswith("approve:") or data.startswith("reject:")):
-        # не отвечаем — это не наши кнопки
         return
 
     if user_id not in ADMIN_IDS:
@@ -116,10 +114,11 @@ async def handle_admin_callback(query: CallbackQuery):
 
     # Получаем заявку из БД
     async with aiosqlite.connect(DB_PATH) as db:
-        row = await db.execute_fetchone(
+        async with db.execute(
             "SELECT id, user_id, from_chat_id, from_message_id, status FROM proposals WHERE id = ?",
             (proposal_id,)
-        )
+        ) as cursor:
+            row = await cursor.fetchone()
 
     if not row:
         await query.answer("Заявка не найдена.", show_alert=True)
@@ -138,7 +137,6 @@ async def handle_admin_callback(query: CallbackQuery):
     if action == "approve":
         try:
             await bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=from_chat_id, message_id=from_message_id)
-            # уведомляем автора (если можно)
             try:
                 await bot.send_message(chat_id=proposer_id, text="✅ Ваше предложение одобрено и опубликовано в канале.")
             except Exception:
