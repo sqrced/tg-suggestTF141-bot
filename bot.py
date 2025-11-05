@@ -166,3 +166,32 @@ async def handle_admin_callback(query: CallbackQuery):
 
         await query.message.edit_text(f"Заявка #{proposal_id} — ❌ ОТКЛОНЕНО")
         await query.answer("Заявка отклонена.")
+
+from aiohttp import web
+
+WEBHOOK_HOST = "https://tg-suggesttf141-bot-6.onrender.com"  # 🔹 твой URL из Render
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
+
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+    await init_db()
+    print("✅ Webhook установлен и база данных готова!")
+
+async def on_shutdown(app):
+    await bot.session.close()
+    print("🛑 Бот остановлен.")
+
+async def handle_webhook(request):
+    update = await request.json()
+    await dp.feed_webhook_update(bot, update)
+    return web.Response()
+
+app = web.Application()
+app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
+
+if __name__ == "__main__":
+    web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
