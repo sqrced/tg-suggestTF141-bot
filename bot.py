@@ -1,11 +1,10 @@
-# bot.py
 import os
 import logging
 import aiosqlite
 import asyncio
 from aiohttp import web
-from aiogram import Bot, Dispatcher
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Update
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
 from datetime import datetime
 
@@ -13,10 +12,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --- Конфигурация через env ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")  # Telegram bot token
-ADMIN_IDS = os.getenv("ADMIN_IDS", "")  # comma separated, e.g. "12345678,98765432"
-CHANNEL_ID = os.getenv("CHANNEL_ID")  # e.g. -1001234567890
-WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")  # e.g. https://your-app.onrender.com
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_IDS = os.getenv("ADMIN_IDS", "")
+CHANNEL_ID = os.getenv("CHANNEL_ID")
+WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")
 PORT = int(os.getenv("PORT", "8000"))
 
 if not BOT_TOKEN or not ADMIN_IDS or not CHANNEL_ID or not WEBHOOK_BASE:
@@ -35,7 +34,7 @@ DB_PATH = "proposals.db"
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- База данных: proposals ---
+# --- Инициализация базы данных ---
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
@@ -50,27 +49,21 @@ async def init_db():
         """)
         await db.commit()
 
-# --- Утилита: создаёт inline клаву для админов ---
+# --- Клавиатура для админов ---
 def admin_keyboard(proposal_id: int) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{proposal_id}"),
-                InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{proposal_id}")
-            ]
-        ]
-    )
-    return kb
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{proposal_id}"),
+        InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{proposal_id}")
+    ]])
 
-# --- /start handler ---
-@dp.message(Command(commands=["start"]))
+# --- /start ---
+@dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.reply("Привет! Отправь мне своё предложение.")
 
-# --- Принятие любой заявки (текст + медиа в одном сообщении) ---
+# --- Обработка входящих предложений ---
 @dp.message()
 async def handle_proposal(message: Message):
-    # Сохраняем заявку
     created_at = datetime.utcnow().isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
@@ -80,37 +73,32 @@ async def handle_proposal(message: Message):
         await db.commit()
         proposal_id = cur.lastrowid
 
-    # Ответ пользователю
     try:
         await message.reply("🕙 Ваше предложение отправлено на проверку модераторам.")
     except Exception as e:
         logger.warning(f"Can't reply to user: {e}")
 
-    # Отправляем админам: сначала форвардим оригинал (чтобы видеть отправителя), 
-    # потом отправляем контрол сообщение с кнопками (approve/reject)
     for admin in ADMIN_IDS:
         try:
-            # Форвардим оригинал (админ увидит от кого)
             await bot.forward_message(chat_id=admin, from_chat_id=message.chat.id, message_id=message.message_id)
-            # Отправляем сообщение с кнопками под forwarded
-            text = f"Новая заявка #{proposal_id}\nОтправитель: <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a>\nID: <code>{message.from_user.id}</code>"
+            text = (
+                f"Новая заявка #{proposal_id}\n"
+                f"Отправитель: <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a>\n"
+                f"ID: <code>{message.from_user.id}</code>"
+            )
             await bot.send_message(chat_id=admin, text=text, parse_mode="HTML", reply_markup=admin_keyboard(proposal_id))
         except Exception as e:
             logger.exception(f"Failed to notify admin {admin}: {e}")
 
-# --- # --- Обработка callback'ов от админов ---
-@dp.callback_query()
+# --- ✅ Обработка callback от админов ---
+@dp.callback_query(F.data.startswith(("approve:", "reject:")))
 async def handle_admin_callback(query: CallbackQuery):
     user_id = query.from_user.id
     if user_id not in ADMIN_IDS:
         await query.answer("У вас нет прав на это.", show_alert=True)
         return
 
-    data = query.data or ""
-    if not (data.startswith("approve:") or data.startswith("reject:")):
-        await query.answer()
-        return
-
+    data = query.data
     action, sid = data.split(":", 1)
     try:
         proposal_id = int(sid)
@@ -118,7 +106,7 @@ async def handle_admin_callback(query: CallbackQuery):
         await query.answer("Неверный ID заявки.")
         return
 
-    # Получаем заявку из БД
+    # --- Получаем заявку из БД ---
     async with aiosqlite.connect(DB_PATH) as db:
         row = await db.execute_fetchone(
             "SELECT id, user_id, from_chat_id, from_message_id, status FROM proposals WHERE id = ?",
@@ -138,38 +126,28 @@ async def handle_admin_callback(query: CallbackQuery):
     if action == "approve":
         try:
             await bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=from_chat_id, message_id=from_message_id)
-        except Exception as e:
-            logger.exception(f"Failed to post to channel: {e}")
-            await query.answer("Ошибка при публикации в канал. Проверьте, что бот — админ канала.", show_alert=True)
-            return
-
-        try:
             await bot.send_message(chat_id=proposer_id, text="✅ Ваше предложение одобрено и опубликовано в канале.")
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("UPDATE proposals SET status = 'approved' WHERE id = ?", (proposal_id,))
+                await db.commit()
+            await query.message.edit_text(f"Заявка #{proposal_id} — ✅ ОДОБРЕНО")
+            await query.answer("Заявка одобрена.")
         except Exception as e:
-            logger.warning(f"Can't notify proposer {proposer_id}: {e}")
-
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("UPDATE proposals SET status = 'approved' WHERE id = ?", (proposal_id,))
-            await db.commit()
-
-        await query.message.edit_text(f"Заявка #{proposal_id} — ✅ ОДОБРЕНО")
-        await query.answer("Заявка одобрена.")
-    else:  # reject
+            logger.exception(f"Failed to approve: {e}")
+            await query.answer("Ошибка при публикации в канал. Проверьте, что бот — админ канала.", show_alert=True)
+    else:
         try:
             await bot.send_message(chat_id=proposer_id, text="❌ Ваше предложение отклонено модераторами.")
+            async with aiosqlite.connect(DB_PATH) as db:
+                await db.execute("UPDATE proposals SET status = 'rejected' WHERE id = ?", (proposal_id,))
+                await db.commit()
+            await query.message.edit_text(f"Заявка #{proposal_id} — ❌ ОТКЛОНЕНО")
+            await query.answer("Заявка отклонена.")
         except Exception as e:
-            logger.warning(f"Can't notify proposer {proposer_id}: {e}")
+            logger.warning(f"Failed to reject: {e}")
 
-        async with aiosqlite.connect(DB_PATH) as db:
-            await db.execute("UPDATE proposals SET status = 'rejected' WHERE id = ?", (proposal_id,))
-            await db.commit()
-
-        await query.message.edit_text(f"Заявка #{proposal_id} — ❌ ОТКЛОНЕНО")
-        await query.answer("Заявка отклонена.")
-
-from aiohttp import web
-
-WEBHOOK_HOST = "https://tg-suggesttf141-bot-6.onrender.com"  # 🔹 твой URL из Render
+# --- Webhook настройка ---
+WEBHOOK_HOST = "https://tg-suggesttf141-bot-6.onrender.com"
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
 
@@ -189,7 +167,6 @@ async def handle_webhook(request):
 
 app = web.Application()
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
-
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
