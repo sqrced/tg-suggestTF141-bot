@@ -2,7 +2,7 @@ import os
 import logging
 import aiosqlite
 from aiohttp import web
-from aiogram import Bot, Dispatcher, F, types
+from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
 from datetime import datetime
@@ -85,21 +85,27 @@ async def handle_proposal(message: Message):
         except Exception as e:
             logger.exception(f"Ошибка при уведомлении админа {admin}: {e}")
 
-# --- Callback от админов ---
-@dp.callback_query(F.data.startswith(("approve:", "reject:")))
+# --- Callback от админов (исправлено) ---
+@dp.callback_query()
 async def handle_admin_callback(query: CallbackQuery):
+    data = query.data
     user_id = query.from_user.id
+
+    if not data or not any(data.startswith(prefix) for prefix in ("approve:", "reject:")):
+        return  # игнорируем лишние callback'и
+
     if user_id not in ADMIN_IDS:
-        await query.answer("У вас нет прав на это.", show_alert=True)
+        await query.answer("У вас нет прав на это действие.", show_alert=True)
         return
 
-    action, sid = query.data.split(":", 1)
+    action, sid = data.split(":", 1)
     try:
         proposal_id = int(sid)
     except ValueError:
-        await query.answer("Неверный ID.")
+        await query.answer("Неверный ID заявки.", show_alert=True)
         return
 
+    # Проверяем заявку в БД
     async with aiosqlite.connect(DB_PATH) as db:
         row = await db.execute_fetchone(
             "SELECT id, user_id, from_chat_id, from_message_id, status FROM proposals WHERE id = ?",
@@ -107,36 +113,44 @@ async def handle_admin_callback(query: CallbackQuery):
         )
 
     if not row:
-        await query.answer("Заявка не найдена.")
+        await query.answer("Заявка не найдена.", show_alert=True)
         return
 
     _, proposer_id, from_chat_id, from_message_id, status = row
+
     if status != "pending":
         await query.answer("Эта заявка уже обработана.", show_alert=True)
         return
 
     if action == "approve":
         try:
+            # Пересылаем в канал
             await bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=from_chat_id, message_id=from_message_id)
             await bot.send_message(chat_id=proposer_id, text="✅ Ваше предложение одобрено и опубликовано в канале.")
+
+            # Обновляем БД
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("UPDATE proposals SET status = 'approved' WHERE id = ?", (proposal_id,))
                 await db.commit()
+
             await query.message.edit_text(f"Заявка #{proposal_id} — ✅ ОДОБРЕНО")
             await query.answer("Заявка одобрена.")
         except Exception as e:
             logger.exception(f"Ошибка при одобрении: {e}")
             await query.answer("Ошибка при публикации в канал.", show_alert=True)
-    else:
+
+    elif action == "reject":
         try:
             await bot.send_message(chat_id=proposer_id, text="❌ Ваше предложение отклонено модераторами.")
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("UPDATE proposals SET status = 'rejected' WHERE id = ?", (proposal_id,))
                 await db.commit()
+
             await query.message.edit_text(f"Заявка #{proposal_id} — ❌ ОТКЛОНЕНО")
             await query.answer("Заявка отклонена.")
         except Exception as e:
             logger.warning(f"Ошибка при отклонении: {e}")
+            await query.answer("Ошибка при отклонении.", show_alert=True)
 
 # --- Webhook ---
 async def handle_webhook(request: web.Request):
