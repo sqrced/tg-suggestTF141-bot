@@ -113,12 +113,17 @@ async def handle_admin_callback(query: CallbackQuery):
         return
 
     # Получаем заявку из БД
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute(
-            "SELECT id, user_id, from_chat_id, from_message_id, status FROM proposals WHERE id = ?",
-            (proposal_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            async with db.execute(
+                "SELECT id, user_id, from_chat_id, from_message_id, status FROM proposals WHERE id = ?",
+                (proposal_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+    except Exception as e:
+        logger.exception(f"Ошибка при получении заявки из БД: {e}")
+        await query.answer("Ошибка базы данных.", show_alert=True)
+        return
 
     if not row:
         await query.answer("Заявка не найдена.", show_alert=True)
@@ -136,6 +141,7 @@ async def handle_admin_callback(query: CallbackQuery):
 
     if action == "approve":
         try:
+            # Публикуем в канал
             await bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=from_chat_id, message_id=from_message_id)
             try:
                 await bot.send_message(chat_id=proposer_id, text="✅ Ваше предложение одобрено и опубликовано в канале.")
@@ -150,6 +156,7 @@ async def handle_admin_callback(query: CallbackQuery):
                 await query.message.edit_text(f"Заявка #{proposal_id} — ✅ ОДОБРЕНО")
             except Exception:
                 pass
+
             await query.answer("Заявка одобрена.")
         except Exception as e:
             logger.exception(f"Ошибка при публикации в канал: {e}")
@@ -170,6 +177,7 @@ async def handle_admin_callback(query: CallbackQuery):
                 await query.message.edit_text(f"Заявка #{proposal_id} — ❌ ОТКЛОНЕНО")
             except Exception:
                 pass
+
             await query.answer("Заявка отклонена.")
         except Exception as e:
             logger.exception(f"Ошибка при отклонении: {e}")
