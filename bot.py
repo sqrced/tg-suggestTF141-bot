@@ -226,6 +226,10 @@ async def on_shutdown(app):
 
 # --- App и запуск ---
 app = web.Application()
+# Обработчик для корня, чтобы Render видел, что сервис жив
+@app.router.get("/")
+async def root(request):
+    return web.Response(text="Bot is running ✅")
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
