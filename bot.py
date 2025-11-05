@@ -1,9 +1,8 @@
 import os
 import logging
 import aiosqlite
-import asyncio
 from aiohttp import web
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher, F, types
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
 from datetime import datetime
@@ -11,7 +10,7 @@ from datetime import datetime
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Конфигурация через env ---
+# --- Конфигурация ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_IDS = os.getenv("ADMIN_IDS", "")
 CHANNEL_ID = os.getenv("CHANNEL_ID")
@@ -19,22 +18,20 @@ WEBHOOK_BASE = os.getenv("WEBHOOK_BASE")
 PORT = int(os.getenv("PORT", "8000"))
 
 if not BOT_TOKEN or not ADMIN_IDS or not CHANNEL_ID or not WEBHOOK_BASE:
-    logger.error("Please set BOT_TOKEN, ADMIN_IDS, CHANNEL_ID and WEBHOOK_BASE environment variables.")
-    raise SystemExit("Missing env vars")
+    raise SystemExit("❌ Укажи BOT_TOKEN, ADMIN_IDS, CHANNEL_ID и WEBHOOK_BASE в переменных окружения.")
 
 ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS.split(",") if x.strip()]
 CHANNEL_ID = int(CHANNEL_ID)
 
 WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = WEBHOOK_BASE.rstrip("/") + WEBHOOK_PATH
-
 DB_PATH = "proposals.db"
 
-# --- Инициализация bot/dispatcher ---
+# --- Инициализация ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
-# --- Инициализация базы данных ---
+# --- База данных ---
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
@@ -50,7 +47,7 @@ async def init_db():
         await db.commit()
 
 # --- Клавиатура для админов ---
-def admin_keyboard(proposal_id: int) -> InlineKeyboardMarkup:
+def admin_keyboard(proposal_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Одобрить", callback_data=f"approve:{proposal_id}"),
         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{proposal_id}")
@@ -61,10 +58,11 @@ def admin_keyboard(proposal_id: int) -> InlineKeyboardMarkup:
 async def cmd_start(message: Message):
     await message.reply("Привет! Отправь мне своё предложение.")
 
-# --- Обработка входящих предложений ---
+# --- Приём предложений ---
 @dp.message()
 async def handle_proposal(message: Message):
     created_at = datetime.utcnow().isoformat()
+
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "INSERT INTO proposals (user_id, from_chat_id, from_message_id, created_at) VALUES (?, ?, ?, ?)",
@@ -73,10 +71,7 @@ async def handle_proposal(message: Message):
         await db.commit()
         proposal_id = cur.lastrowid
 
-    try:
-        await message.reply("🕙 Ваше предложение отправлено на проверку модераторам.")
-    except Exception as e:
-        logger.warning(f"Can't reply to user: {e}")
+    await message.reply("🕙 Ваше предложение отправлено на проверку модераторам.")
 
     for admin in ADMIN_IDS:
         try:
@@ -88,9 +83,9 @@ async def handle_proposal(message: Message):
             )
             await bot.send_message(chat_id=admin, text=text, parse_mode="HTML", reply_markup=admin_keyboard(proposal_id))
         except Exception as e:
-            logger.exception(f"Failed to notify admin {admin}: {e}")
+            logger.exception(f"Ошибка при уведомлении админа {admin}: {e}")
 
-# --- ✅ Обработка callback от админов ---
+# --- Callback от админов ---
 @dp.callback_query(F.data.startswith(("approve:", "reject:")))
 async def handle_admin_callback(query: CallbackQuery):
     user_id = query.from_user.id
@@ -98,15 +93,13 @@ async def handle_admin_callback(query: CallbackQuery):
         await query.answer("У вас нет прав на это.", show_alert=True)
         return
 
-    data = query.data
-    action, sid = data.split(":", 1)
+    action, sid = query.data.split(":", 1)
     try:
         proposal_id = int(sid)
     except ValueError:
-        await query.answer("Неверный ID заявки.")
+        await query.answer("Неверный ID.")
         return
 
-    # --- Получаем заявку из БД ---
     async with aiosqlite.connect(DB_PATH) as db:
         row = await db.execute_fetchone(
             "SELECT id, user_id, from_chat_id, from_message_id, status FROM proposals WHERE id = ?",
@@ -120,7 +113,6 @@ async def handle_admin_callback(query: CallbackQuery):
     _, proposer_id, from_chat_id, from_message_id, status = row
     if status != "pending":
         await query.answer("Эта заявка уже обработана.", show_alert=True)
-        await query.message.edit_text(f"Заявка #{proposal_id} — уже {status}.")
         return
 
     if action == "approve":
@@ -133,8 +125,8 @@ async def handle_admin_callback(query: CallbackQuery):
             await query.message.edit_text(f"Заявка #{proposal_id} — ✅ ОДОБРЕНО")
             await query.answer("Заявка одобрена.")
         except Exception as e:
-            logger.exception(f"Failed to approve: {e}")
-            await query.answer("Ошибка при публикации в канал. Проверьте, что бот — админ канала.", show_alert=True)
+            logger.exception(f"Ошибка при одобрении: {e}")
+            await query.answer("Ошибка при публикации в канал.", show_alert=True)
     else:
         try:
             await bot.send_message(chat_id=proposer_id, text="❌ Ваше предложение отклонено модераторами.")
@@ -144,53 +136,32 @@ async def handle_admin_callback(query: CallbackQuery):
             await query.message.edit_text(f"Заявка #{proposal_id} — ❌ ОТКЛОНЕНО")
             await query.answer("Заявка отклонена.")
         except Exception as e:
-            logger.warning(f"Failed to reject: {e}")
+            logger.warning(f"Ошибка при отклонении: {e}")
 
-# --- Webhook настройка ---
-WEBHOOK_HOST = "https://tg-suggesttf141-bot-6.onrender.com"
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
-
-async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
-    await init_db()
-    print("✅ Webhook установлен и база данных готова!")
-
-async def on_shutdown(app):
-    await bot.session.close()
-    print("🛑 Бот остановлен.")
-
-# --- Webhook и запуск сервера ---
-from aiohttp import web
-from aiogram import types
-
-WEBHOOK_HOST = "https://tg-suggesttf141-bot-6.onrender.com"  # твой URL из Render
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
-
-async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL)
-    await init_db()
-    print("✅ Webhook установлен и база данных готова!")
-
-async def on_shutdown(app):
-    await bot.session.close()
-    print("🛑 Бот остановлен.")
-
+# --- Webhook ---
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
-        update = types.Update(**data)  # ✅ преобразуем dict в объект Update
-        await dp.feed_update(bot, update)  # ✅ правильный метод
+        update = types.Update(**data)
+        await dp.feed_update(bot, update)
     except Exception as e:
-        logging.exception(f"Ошибка при обработке webhook: {e}")
+        logger.exception(f"Ошибка при webhook: {e}")
     return web.Response(text="ok")
 
-# --- Создание aiohttp-приложения ---
+async def on_startup(app):
+    await init_db()
+    await bot.set_webhook(WEBHOOK_URL)
+    print("✅ Webhook установлен, база готова.")
+
+async def on_shutdown(app):
+    await bot.session.close()
+    print("🛑 Бот остановлен.")
+
+# --- Запуск ---
 app = web.Application()
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    web.run_app(app, host="0.0.0.0", port=PORT)
