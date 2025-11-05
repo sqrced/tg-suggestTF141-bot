@@ -98,7 +98,7 @@ async def handle_proposal(message: Message):
         except Exception as e:
             logger.exception(f"Failed to notify admin {admin}: {e}")
 
-# --- Обработка callback'ов от админов ---
+# --- # --- Обработка callback'ов от админов ---
 @dp.callback_query()
 async def handle_admin_callback(query: CallbackQuery):
     user_id = query.from_user.id
@@ -132,12 +132,10 @@ async def handle_admin_callback(query: CallbackQuery):
     _, proposer_id, from_chat_id, from_message_id, status = row
     if status != "pending":
         await query.answer("Эта заявка уже обработана.", show_alert=True)
-        # обновим подкнопки
         await query.message.edit_text(f"Заявка #{proposal_id} — уже {status}.")
         return
 
     if action == "approve":
-        # копируем сообщение в канал (анонимно: если бот админ канала, пост будет от канала)
         try:
             await bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=from_chat_id, message_id=from_message_id)
         except Exception as e:
@@ -145,25 +143,26 @@ async def handle_admin_callback(query: CallbackQuery):
             await query.answer("Ошибка при публикации в канал. Проверьте, что бот — админ канала.", show_alert=True)
             return
 
-        # уведомляем автора
         try:
             await bot.send_message(chat_id=proposer_id, text="✅ Ваше предложение одобрено и опубликовано в канале.")
         except Exception as e:
             logger.warning(f"Can't notify proposer {proposer_id}: {e}")
 
-        # пометить в БД
         async with aiosqlite.connect(DB_PATH) as db:
             await db.execute("UPDATE proposals SET status = 'approved' WHERE id = ?", (proposal_id,))
             await db.commit()
 
-        # обновляем сообщение у админа (чтобы кнопки не кликались снова)
         await query.message.edit_text(f"Заявка #{proposal_id} — ✅ ОДОБРЕНО")
         await query.answer("Заявка одобрена.")
     else:  # reject
-        # уведомляем автора
         try:
             await bot.send_message(chat_id=proposer_id, text="❌ Ваше предложение отклонено модераторами.")
         except Exception as e:
             logger.warning(f"Can't notify proposer {proposer_id}: {e}")
 
-        async with aios
+        async with aiosqlite.connect(DB_PATH) as db:
+            await db.execute("UPDATE proposals SET status = 'rejected' WHERE id = ?", (proposal_id,))
+            await db.commit()
+
+        await query.message.edit_text(f"Заявка #{proposal_id} — ❌ ОТКЛОНЕНО")
+        await query.answer("Заявка отклонена.")
