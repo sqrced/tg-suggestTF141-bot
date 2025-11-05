@@ -1,4 +1,3 @@
-# bot.py (полностью)
 import os
 import logging
 import aiosqlite
@@ -6,7 +5,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
-from datetime import datetime
+from datetime import datetime, timezone
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -31,6 +30,7 @@ DB_PATH = "proposals.db"
 # --- Инициализация ---
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+app = web.Application()
 
 # --- База данных ---
 async def init_db():
@@ -62,15 +62,19 @@ async def cmd_start(message: Message):
 # --- Приём предложений ---
 @dp.message()
 async def handle_proposal(message: Message):
-    created_at = datetime.utcnow().isoformat()
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cur = await db.execute(
-            "INSERT INTO proposals (user_id, from_chat_id, from_message_id, created_at) VALUES (?, ?, ?, ?)",
-            (message.from_user.id, message.chat.id, message.message_id, created_at)
-        )
-        await db.commit()
-        proposal_id = cur.lastrowid
+    created_at = datetime.now(timezone.utc).isoformat()
+    try:
+        async with aiosqlite.connect(DB_PATH) as db:
+            cur = await db.execute(
+                "INSERT INTO proposals (user_id, from_chat_id, from_message_id, created_at) VALUES (?, ?, ?, ?)",
+                (message.from_user.id, message.chat.id, message.message_id, created_at)
+            )
+            await db.commit()
+            proposal_id = cur.lastrowid
+    except Exception as e:
+        logger.exception(f"Ошибка при сохранении предложения: {e}")
+        await message.reply("❌ Произошла ошибка. Попробуйте позже.")
+        return
 
     # Ответ пользователю
     try:
@@ -78,18 +82,20 @@ async def handle_proposal(message: Message):
     except Exception:
         logger.warning("Не удалось ответить пользователю (возможно, закрыт чат).")
 
-    # Уведомляем админов: форвардим оригинал и шлём сообщение с кнопками
+    # Уведомляем админов асинхронно, чтобы не блокировать ответ пользователю
     for admin in ADMIN_IDS:
-        try:
-            await bot.forward_message(chat_id=admin, from_chat_id=message.chat.id, message_id=message.message_id)
-            text = (
-                f"Новая заявка #{proposal_id}\n"
-                f"Отправитель: <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a>\n"
-                f"ID: <code>{message.from_user.id}</code>"
-            )
-            await bot.send_message(chat_id=admin, text=text, parse_mode="HTML", reply_markup=admin_keyboard(proposal_id))
-        except Exception as e:
-            logger.exception(f"Ошибка при уведомлении админа {admin}: {e}")
+        async def notify_admin(admin_id: int):
+            try:
+                await bot.forward_message(chat_id=admin_id, from_chat_id=message.chat.id, message_id=message.message_id)
+                text = (
+                    f"Новая заявка #{proposal_id}\n"
+                    f"Отправитель: <a href='tg://user?id={message.from_user.id}'>{message.from_user.full_name}</a>\n"
+                    f"ID: <code>{message.from_user.id}</code>"
+                )
+                await bot.send_message(chat_id=admin_id, text=text, parse_mode="HTML", reply_markup=admin_keyboard(proposal_id))
+            except Exception as e:
+                logger.exception(f"Ошибка при уведомлении админа {admin_id}: {e}")
+        dp.loop.create_task(notify_admin(admin))
 
 # --- Callback от админов ---
 @dp.callback_query()
@@ -97,7 +103,6 @@ async def handle_admin_callback(query: CallbackQuery):
     data = query.data or ""
     user_id = query.from_user.id
 
-    # Игнорируем посторонние callback'и
     if not (data.startswith("approve:") or data.startswith("reject:")):
         return
 
@@ -112,7 +117,6 @@ async def handle_admin_callback(query: CallbackQuery):
         await query.answer("Неверный ID заявки.", show_alert=True)
         return
 
-    # Получаем заявку из БД
     try:
         async with aiosqlite.connect(DB_PATH) as db:
             async with db.execute(
@@ -121,7 +125,7 @@ async def handle_admin_callback(query: CallbackQuery):
             ) as cursor:
                 row = await cursor.fetchone()
     except Exception as e:
-        logger.exception(f"Ошибка при получении заявки из БД: {e}")
+        logger.exception(f"Ошибка при получении заявки: {e}")
         await query.answer("Ошибка базы данных.", show_alert=True)
         return
 
@@ -141,70 +145,56 @@ async def handle_admin_callback(query: CallbackQuery):
 
     if action == "approve":
         try:
-            # Публикуем в канал
             await bot.copy_message(chat_id=CHANNEL_ID, from_chat_id=from_chat_id, message_id=from_message_id)
             try:
                 await bot.send_message(chat_id=proposer_id, text="✅ Ваше предложение одобрено и опубликовано в канале.")
             except Exception:
-                logger.warning("Не удалось уведомить автора (возможно, закрыл чат).")
-
+                logger.warning("Не удалось уведомить автора.")
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("UPDATE proposals SET status = 'approved' WHERE id = ?", (proposal_id,))
                 await db.commit()
-
             try:
                 await query.message.edit_text(f"Заявка #{proposal_id} — ✅ ОДОБРЕНО")
             except Exception:
                 pass
-
             await query.answer("Заявка одобрена.")
         except Exception as e:
-            logger.exception(f"Ошибка при публикации в канал: {e}")
-            await query.answer("Ошибка при публикации в канал. Проверь, что бот — админ канала.", show_alert=True)
-
-    else:  # reject
+            logger.exception(f"Ошибка при публикации: {e}")
+            await query.answer("Ошибка при публикации.", show_alert=True)
+    else:
         try:
             try:
                 await bot.send_message(chat_id=proposer_id, text="❌ Ваше предложение отклонено модераторами.")
             except Exception:
-                logger.warning("Не удалось уведомить автора об отклонении.")
-
+                logger.warning("Не удалось уведомить автора.")
             async with aiosqlite.connect(DB_PATH) as db:
                 await db.execute("UPDATE proposals SET status = 'rejected' WHERE id = ?", (proposal_id,))
                 await db.commit()
-
             try:
                 await query.message.edit_text(f"Заявка #{proposal_id} — ❌ ОТКЛОНЕНО")
             except Exception:
                 pass
-
             await query.answer("Заявка отклонена.")
         except Exception as e:
             logger.exception(f"Ошибка при отклонении: {e}")
             await query.answer("Ошибка при отклонении.", show_alert=True)
 
-# --- Webhook handler (исправленный для aiogram 3.x) ---
+# --- Webhook handler ---
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
-    except Exception as e:
-        logger.exception(f"Ошибка чтения JSON из webhook: {e}")
-        return web.Response(status=400, text="bad request")
-
-    try:
         update = types.Update(**data)
-    except Exception as e:
-        logger.exception(f"Ошибка создания types.Update: {e}")
-        return web.Response(status=400, text="bad update")
-
-    try:
-        # Для aiogram 3.x правильный способ
         await dp._process_update(bot, update)
     except Exception as e:
-        logger.exception(f"Ошибка обработки обновления: {e}")
-        return web.Response(status=500, text="update failed")
-
+        logger.exception(f"Ошибка обработки апдейта: {e}")
     return web.Response(text="ok")
+
+app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+# --- Обработчик корня (для cron-job и Render) ---
+@app.router.get("/")
+async def root(request):
+    return web.Response(text="Bot is running ✅")
 
 # --- Startup / Shutdown ---
 async def on_startup(app):
@@ -224,18 +214,10 @@ async def on_shutdown(app):
     await bot.session.close()
     logger.info("Бот остановлен.")
 
-# --- App и запуск ---
-app = web.Application()
-# Обработчик для корня, чтобы Render видел, что сервис жив
-@app.router.get("/")
-async def root(request):
-    return web.Response(text="Bot is running ✅")
-app.router.add_post(WEBHOOK_PATH, handle_webhook)
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
+# --- Запуск ---
 if __name__ == "__main__":
-    # port из env (Render задаёт PORT), fallback — 8000
-    port = int(os.environ.get("PORT", PORT))
-    web.run_app(app, host="0.0.0.0", port=port)
-        
+    from aiohttp import web
+    web.run_app(app, host="0.0.0.0", port=PORT)
