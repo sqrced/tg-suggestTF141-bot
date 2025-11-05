@@ -177,7 +177,7 @@ async def handle_admin_callback(query: CallbackQuery):
             logger.exception(f"Ошибка при отклонении: {e}")
             await query.answer("Ошибка при отклонении.", show_alert=True)
 
-# --- Webhook handler (надежный: пробует корректно передать Update в диспетчер) ---
+# --- Webhook handler (исправленный для aiogram 3.x) ---
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
@@ -185,44 +185,18 @@ async def handle_webhook(request: web.Request):
         logger.exception(f"Ошибка чтения JSON из webhook: {e}")
         return web.Response(status=400, text="bad request")
 
-    # Пытаемся превратить dict в types.Update
     try:
         update = types.Update(**data)
     except Exception as e:
         logger.exception(f"Ошибка создания types.Update: {e}")
         return web.Response(status=400, text="bad update")
 
-    # Попытки передать апдейт в Dispatcher разными способами в зависимости от версии aiogram
-    dispatched = False
     try:
-        # В некоторых версиях: dp.feed_update(bot, update)
-        await dp.feed_update(bot, update)
-        dispatched = True
-    except AttributeError:
-        pass
+        # Для aiogram 3.x правильный способ
+        await dp._process_update(bot, update)
     except Exception as e:
-        # если метод есть, но бросил — логируем и продолжаем (возможно сработало)
-        logger.exception(f"dp.feed_update raised: {e}")
-        dispatched = True  # уже попыталось, не пытать дальше
-
-    if not dispatched:
-        try:
-            # другой вариант: dp.process_update(update)
-            await dp.process_update(update)
-            dispatched = True
-        except AttributeError:
-            pass
-        except Exception as e:
-            logger.exception(f"dp.process_update raised: {e}")
-            dispatched = True
-
-    if not dispatched:
-        try:
-            # ещё вариант: dp.feed_update(update)
-            await dp.feed_update(update)
-            dispatched = True
-        except Exception as e:
-            logger.exception(f"final attempt to dispatch update failed: {e}")
+        logger.exception(f"Ошибка обработки обновления: {e}")
+        return web.Response(status=500, text="update failed")
 
     return web.Response(text="ok")
 
