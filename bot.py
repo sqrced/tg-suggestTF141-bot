@@ -185,6 +185,22 @@ async def handle_webhook(request: web.Request):
         logger.exception(f"Ошибка чтения JSON из webhook: {e}")
         return web.Response(status=400, text="bad request")
 
+    # Превращаем dict в объект types.Update
+    try:
+        update = types.Update(**data)
+    except Exception as e:
+        logger.exception(f"Ошибка создания types.Update: {e}")
+        return web.Response(status=400, text="bad update")
+
+    # Передаём update в диспетчер
+    try:
+        await dp.update.update(update)
+    except Exception as e:
+        logger.exception(f"Ошибка при обработке update: {e}")
+        return web.Response(status=500, text="failed")
+
+    return web.Response(text="ok")
+
     # Пытаемся превратить dict в types.Update
     try:
         update = types.Update(**data)
