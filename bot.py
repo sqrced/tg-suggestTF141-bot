@@ -160,11 +160,33 @@ async def on_shutdown(app):
     await bot.session.close()
     print("🛑 Бот остановлен.")
 
-async def handle_webhook(request):
-    update = await request.json()
-    await dp.feed_webhook_update(bot, update)
-    return web.Response()
+# --- Webhook и запуск сервера ---
+from aiohttp import web
+from aiogram import types
 
+WEBHOOK_HOST = "https://tg-suggesttf141-bot-6.onrender.com"  # твой URL из Render
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
+
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
+    await init_db()
+    print("✅ Webhook установлен и база данных готова!")
+
+async def on_shutdown(app):
+    await bot.session.close()
+    print("🛑 Бот остановлен.")
+
+async def handle_webhook(request: web.Request):
+    try:
+        data = await request.json()
+        update = types.Update(**data)  # ✅ преобразуем dict в объект Update
+        await dp.feed_update(bot, update)  # ✅ правильный метод
+    except Exception as e:
+        logging.exception(f"Ошибка при обработке webhook: {e}")
+    return web.Response(text="ok")
+
+# --- Создание aiohttp-приложения ---
 app = web.Application()
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
 app.on_startup.append(on_startup)
