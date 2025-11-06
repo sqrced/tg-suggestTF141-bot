@@ -210,6 +210,7 @@ async def on_shutdown(app):
     try:
         await bot.delete_webhook()
     except Exception:
+        pass
         
 # --- App и запуск ---
 app = web.Application()
