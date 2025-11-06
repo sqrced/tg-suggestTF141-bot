@@ -1,14 +1,19 @@
 name: Keep Render Bot Awake
 
+# Запуск каждые 5 минут + возможность запускать вручную
 on:
   schedule:
-    - cron: '*/5 * * * *'  # каждые 5 минут
-  workflow_dispatch:        # можно запускать вручную
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Render health endpoint
+      - name: Ping /health endpoint
         run: |
           curl -s -o /dev/null -w "%{http_code}" https://tg-suggesttf141-bot-6.onrender.com/health
+
+      - name: Ping / endpoint (старый)
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" https://tg-suggesttf141-bot-6.onrender.com/
