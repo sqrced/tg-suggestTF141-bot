@@ -178,9 +178,8 @@ async def handle_admin_callback(query: CallbackQuery):
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
-        update = types.Update(**data)
-        # ИСПРАВЛЕНИЕ: используем публичный метод feed_update вместо приватного _process_update
-        await dp.feed_update(update)
+        update = types.Update(**data)  # создаём объект Update из словаря
+        await dp.feed_update(update)    # передаём объект Update в feed_update
         return web.Response(text="ok")
     except Exception as e:
         logger.exception(f"Ошибка обработки webhook: {e}")
@@ -190,7 +189,6 @@ async def handle_webhook(request: web.Request):
 async def on_startup(app):
     await init_db()
     try:
-        # ИСПРАВЛЕНИЕ: удаляем старый webhook с очисткой pending updates
         await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook установлен: {WEBHOOK_URL}")
