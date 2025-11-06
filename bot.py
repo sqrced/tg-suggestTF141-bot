@@ -221,9 +221,10 @@ app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
 # --- Ping endpoint для Render и GitHub Actions ---
-@app.get("/")
 async def home(request):
     return web.Response(text="Bot is alive!")
+
+app.router.add_get("/", home)
         
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "8080"))  # Всегда безопасное значение
