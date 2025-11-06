@@ -34,6 +34,7 @@ dp = Dispatcher()
 # --- База данных ---
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
+        # Таблица предложений
         await db.execute("""
             CREATE TABLE IF NOT EXISTS proposals (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,6 +45,15 @@ async def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+
+        # Таблица забаненных пользователей
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS banned_users (
+                user_id INTEGER PRIMARY KEY
+            )
+        """)
+
+        # Сохраняем изменения
         await db.commit()
 
 # --- Клавиатура для админов ---
