@@ -187,9 +187,12 @@ async def handle_webhook(request: web.Request):
 
 # --- Startup / Shutdown ---
 async def on_startup(app):
+    # Инициализация базы данных
     await init_db()
     try:
+        # Удаляем старый webhook и сбрасываем pending updates
         await bot.delete_webhook(drop_pending_updates=True)
+        # Устанавливаем новый webhook
         await bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook установлен: {WEBHOOK_URL}")
     except Exception as e:
@@ -198,7 +201,21 @@ async def on_startup(app):
 
 async def on_shutdown(app):
     try:
+        # Удаляем webhook при завершении
         await bot.delete_webhook()
+    except Exception:
+        pass
+
+    # Корректное закрытие сессии бота
+    if not bot.session.closed:
+        await bot.session.close()
+        logger.info("Сессия бота закрыта.")
+
+    # Если используешь Dispatcher, можно очистить его, чтобы избежать утечек
+    try:
+        await dp.storage.close()
+        await dp.storage.wait_closed()
+        logger.info("Dispatcher storage закрыт.")
     except Exception:
         pass
 
