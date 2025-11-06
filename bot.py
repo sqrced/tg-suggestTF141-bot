@@ -63,6 +63,9 @@ async def cmd_start(message: Message):
 async def handle_proposal(message: Message):
     created_at = datetime.utcnow().isoformat()
 
+    if await is_banned(message.from_user.id):
+        await message.reply("🚫 Вы заблокированы. Ваши предложения игнорируются.")
+        return
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "INSERT INTO proposals (user_id, from_chat_id, from_message_id, created_at) VALUES (?, ?, ?, ?)",
