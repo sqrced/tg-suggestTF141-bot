@@ -72,18 +72,27 @@ async def is_banned(user_id: int) -> bool:
 # --- Команды бана и разбана пользователей ---
 @dp.message(Command("ban"))
 async def cmd_ban(message: types.Message):
-    # Проверяем, что это ответ на сообщение
-    if not message.reply_to_message:
-        await message.reply("❗ Используй команду /ban как ответ на сообщение пользователя.")
-        return
-
     # Проверяем, что это админ
     if message.from_user.id not in ADMIN_IDS:
         await message.reply("🚫 У вас нет прав для выполнения этой команды.")
         return
 
-    user_id = message.reply_to_message.from_user.id
+    args = message.text.split()
+    user_id = None
 
+    # Если указан ID в команде (/ban 123456)
+    if len(args) > 1 and args[1].isdigit():
+        user_id = int(args[1])
+
+    # Или если команда — ответ на сообщение
+    elif message.reply_to_message:
+        user_id = message.reply_to_message.from_user.id
+
+    else:
+        await message.reply("❗ Используй `/ban <user_id>` или ответь на сообщение пользователя.")
+        return
+
+    # Добавляем в базу
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (user_id,))
         await db.commit()
@@ -97,18 +106,27 @@ async def cmd_ban(message: types.Message):
 
 @dp.message(Command("unban"))
 async def cmd_unban(message: types.Message):
-    # Проверяем, что это ответ на сообщение
-    if not message.reply_to_message:
-        await message.reply("❗ Используй команду /unban как ответ на сообщение пользователя.")
-        return
-
     # Проверяем, что это админ
     if message.from_user.id not in ADMIN_IDS:
         await message.reply("🚫 У вас нет прав для выполнения этой команды.")
         return
 
-    user_id = message.reply_to_message.from_user.id
+    args = message.text.split()
+    user_id = None
 
+    # Если указан ID в команде (/unban 123456)
+    if len(args) > 1 and args[1].isdigit():
+        user_id = int(args[1])
+
+    # Или если команда — ответ на сообщение
+    elif message.reply_to_message:
+        user_id = message.reply_to_message.from_user.id
+
+    else:
+        await message.reply("❗ Используй `/unban <user_id>` или ответь на сообщение пользователя.")
+        return
+
+    # Удаляем из базы
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM banned_users WHERE user_id = ?", (user_id,))
         await db.commit()
@@ -118,7 +136,6 @@ async def cmd_unban(message: types.Message):
         await bot.send_message(user_id, "✅ Вы были разблокированы в боте. Теперь вы можете снова отправлять предложения.")
     except:
         pass
-
 
 # --- /start ---
 @dp.message(Command("start"))
