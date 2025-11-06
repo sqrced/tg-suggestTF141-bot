@@ -226,5 +226,6 @@ async def home(request):
     return web.Response(text="Bot is alive!")
         
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", PORT))
+    port = int(os.getenv("PORT", "8080"))  # Всегда безопасное значение
+    logger.info(f"🚀 Запуск на порту {port}")
     web.run_app(app, host="0.0.0.0", port=port)
