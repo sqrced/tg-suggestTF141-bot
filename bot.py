@@ -174,7 +174,7 @@ async def handle_admin_callback(query: CallbackQuery):
             logger.exception(f"Ошибка при отклонении: {e}")
             await query.answer("Ошибка при отклонении.", show_alert=True)
 
-# --- Webhook handler (для aiogram 3.x) ---
+# --- Webhook handler ---
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
@@ -184,11 +184,6 @@ async def handle_webhook(request: web.Request):
 
     try:
         update = types.Update(**data)
-    except Exception as e:
-        logger.exception(f"Ошибка создания types.Update: {e}")
-        return web.Response(status=400, text="bad update")
-
-    try:
         await dp._process_update(bot, update)
     except Exception as e:
         logger.exception(f"Ошибка обработки обновления: {e}")
@@ -200,38 +195,31 @@ async def handle_webhook(request: web.Request):
 async def on_startup(app):
     await init_db()
     try:
-        await bot.set_webhook(WEBHOOK_URL)
-        logger.info(f"Webhook установлен: {WEBHOOK_URL}")
+        await bot.set_webhook(WEBHOOK_URL)  # <-- Сам ставит вебхук
+        logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
     except Exception as e:
-        logger.exception(f"Не удалось установить webhook: {e}")
-    logger.info("База данных и webhook готовы.")
+        logger.exception(f"❌ Не удалось установить webhook: {e}")
 
 async def on_shutdown(app):
     try:
         await bot.delete_webhook()
     except Exception:
         pass
-        
+    logger.info("Бот остановлен.")
+
 # --- App и запуск ---
 app = web.Application()
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
-# --- Ping endpoint для Render и GitHub Actions ---
+# --- Ping endpoint для Render ---
 async def home(request):
     return web.Response(text="Bot is alive!")
 
 app.router.add_get("/", home)
 
-# --- Health endpoint для GitHub Actions ---
-async def health(request):
-    return web.Response(text="OK")
-
-app.router.add_get("/health", health)  # <-- сюда пингер будет слать запрос
-        
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8080"))  # Всегда безопасное значение
+    port = int(os.getenv("PORT", "8080"))
     logger.info(f"🚀 Запуск на порту {port}")
     web.run_app(app, host="0.0.0.0", port=port)
-    
