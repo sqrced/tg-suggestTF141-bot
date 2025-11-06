@@ -178,28 +178,20 @@ async def handle_admin_callback(query: CallbackQuery):
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
-    except Exception as e:
-        logger.exception(f"Ошибка чтения JSON из webhook: {e}")
-        return web.Response(status=400, text="bad request")
-
-    try:
         update = types.Update(**data)
+        # ИСПРАВЛЕНИЕ: используем публичный метод feed_update вместо приватного _process_update
+        await dp.feed_update(update)
+        return web.Response(text="ok")
     except Exception as e:
-        logger.exception(f"Ошибка создания types.Update: {e}")
-        return web.Response(status=400, text="bad update")
-
-    try:
-        await dp._process_update(bot, update)
-    except Exception as e:
-        logger.exception(f"Ошибка обработки обновления: {e}")
+        logger.exception(f"Ошибка обработки webhook: {e}")
         return web.Response(status=500, text="update failed")
-
-    return web.Response(text="ok")
 
 # --- Startup / Shutdown ---
 async def on_startup(app):
     await init_db()
     try:
+        # ИСПРАВЛЕНИЕ: удаляем старый webhook с очисткой pending updates
+        await bot.delete_webhook(drop_pending_updates=True)
         await bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook установлен: {WEBHOOK_URL}")
     except Exception as e:
@@ -211,7 +203,7 @@ async def on_shutdown(app):
         await bot.delete_webhook()
     except Exception:
         pass
-        
+
 # --- App и запуск ---
 app = web.Application()
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
@@ -228,9 +220,9 @@ app.router.add_get("/", home)
 async def health(request):
     return web.Response(text="OK")
 
-app.router.add_get("/health", health)  # <-- сюда пингер будет слать запрос
-        
+app.router.add_get("/health", health)
+
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8080"))  # Всегда безопасное значение
+    port = int(os.getenv("PORT", "8080"))
     logger.info(f"🚀 Запуск на порту {port}")
     web.run_app(app, host="0.0.0.0", port=port)
