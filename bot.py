@@ -268,18 +268,10 @@ async def on_startup(app):
     except Exception as e:
         logger.exception(f"❌ Не удалось установить webhook: {e}")
 
-async def on_shutdown(app):
-    try:
-        await bot.delete_webhook()
-    except Exception:
-        pass
-    logger.info("Бот остановлен.")
-
 # --- App и запуск ---
 app = web.Application()
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
 app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown)
 
 # --- Ping endpoint для Render ---
 async def home(request):
