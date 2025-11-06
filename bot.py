@@ -63,58 +63,66 @@ def admin_keyboard(proposal_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{proposal_id}")
     ]])
 
-# --- Команды бана и разбана пользователей ---
+# --- /start ---
+@dp.message(Command("start"))
+async def cmd_start(message: Message):
+    await message.reply("Привет! Отправь мне своё предложение.")
+
+# --- Проверка: забанен ли пользователь ---
+async def is_banned(user_id: int) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT 1 FROM banned_users WHERE user_id = ?", (user_id,)) as cur:
+            return await cur.fetchone() is not None
+
+# --- Команда /ban ---
 @dp.message(Command("ban"))
-async def cmd_ban(message: types.Message):
-    # Проверяем, что это ответ на сообщение
-    if not message.reply_to_message:
-        await message.reply("❗ Используй команду /ban как ответ на сообщение пользователя.")
+async def cmd_ban(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("У вас нет прав на это действие.")
         return
 
-    # Проверяем, что это админ
-    if str(message.from_user.id) not in ADMIN_IDS:
-        await message.reply("🚫 У вас нет прав для выполнения этой команды.")
+    if not message.reply_to_message:
+        await message.reply("Эту команду нужно использовать ответом на сообщение пользователя.")
         return
 
     user_id = message.reply_to_message.from_user.id
+    full_name = message.reply_to_message.from_user.full_name
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (user_id,))
         await db.commit()
 
-    await message.reply(f"🔒 Пользователь {user_id} заблокирован.")
     try:
-        await bot.send_message(user_id, "🚫 Вы были заблокированы в боте. Ваши предложения больше не принимаются.")
-    except:
+        await bot.send_message(chat_id=user_id, text="🚫 Вы были заблокированы в этом боте. Ваши предложения теперь игнорируются.")
+    except Exception:
         pass
 
+    await message.reply(f"Пользователь {full_name} (ID: {user_id}) заблокирован.")
 
+# --- Команда /unban ---
 @dp.message(Command("unban"))
-async def cmd_unban(message: types.Message):
-    if not message.reply_to_message:
-        await message.reply("❗ Используй команду /unban как ответ на сообщение пользователя.")
+async def cmd_unban(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.reply("У вас нет прав на это действие.")
         return
 
-    if str(message.from_user.id) not in ADMIN_IDS:
-        await message.reply("🚫 У вас нет прав для выполнения этой команды.")
+    if not message.reply_to_message:
+        await message.reply("Эту команду нужно использовать ответом на сообщение пользователя.")
         return
 
     user_id = message.reply_to_message.from_user.id
+    full_name = message.reply_to_message.from_user.full_name
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("DELETE FROM banned_users WHERE user_id = ?", (user_id,))
         await db.commit()
 
-    await message.reply(f"✅ Пользователь {user_id} разблокирован.")
     try:
-        await bot.send_message(user_id, "✅ Вы были разблокированы в боте. Теперь вы можете снова отправлять предложения.")
-    except:
+        await bot.send_message(chat_id=user_id, text="✅ Вы были разблокированы в боте. Теперь можете снова отправлять предложения.")
+    except Exception:
         pass
-        
-# --- /start ---
-@dp.message(Command("start"))
-async def cmd_start(message: Message):
-    await message.reply("Привет! Отправь мне своё предложение.")
+
+    await message.reply(f"Пользователь {full_name} (ID: {user_id}) разблокирован.")
 
 # --- Приём предложений ---
 @dp.message()
@@ -124,6 +132,7 @@ async def handle_proposal(message: Message):
     if await is_banned(message.from_user.id):
         await message.reply("🚫 Вы заблокированы. Ваши предложения игнорируются.")
         return
+
     async with aiosqlite.connect(DB_PATH) as db:
         cur = await db.execute(
             "INSERT INTO proposals (user_id, from_chat_id, from_message_id, created_at) VALUES (?, ?, ?, ?)",
@@ -138,7 +147,7 @@ async def handle_proposal(message: Message):
     except Exception:
         logger.warning("Не удалось ответить пользователю (возможно, закрыт чат).")
 
-    # Уведомляем админов: форвардим оригинал и шлём сообщение с кнопками
+    # Уведомляем админов
     for admin in ADMIN_IDS:
         try:
             await bot.forward_message(chat_id=admin, from_chat_id=message.chat.id, message_id=message.message_id)
@@ -157,7 +166,6 @@ async def handle_admin_callback(query: CallbackQuery):
     data = query.data or ""
     user_id = query.from_user.id
 
-    # Игнорируем посторонние callback'и
     if not (data.startswith("approve:") or data.startswith("reject:")):
         return
 
@@ -172,7 +180,6 @@ async def handle_admin_callback(query: CallbackQuery):
         await query.answer("Неверный ID заявки.", show_alert=True)
         return
 
-    # Получаем заявку из БД
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
             "SELECT id, user_id, from_chat_id, from_message_id, status FROM proposals WHERE id = ?",
@@ -235,43 +242,6 @@ async def handle_admin_callback(query: CallbackQuery):
             logger.exception(f"Ошибка при отклонении: {e}")
             await query.answer("Ошибка при отклонении.", show_alert=True)
 
-# --- Бан / разбан пользователей ---
-
-# Проверка — забанен ли пользователь
-async def is_banned(user_id: int) -> bool:
-    async with aiosqlite.connect(DB_PATH) as db:
-        async with db.execute("SELECT 1 FROM banned_users WHERE user_id = ?", (user_id,)) as cur:
-            return await cur.fetchone() is not None
-
-# Команда /ban — только для админов, по ответу на сообщение
-@dp.message(Command("ban"))
-async def cmd_ban(message: Message):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.reply("У вас нет прав на это действие.")
-        return
-
-    if not message.reply_to_message:
-        await message.reply("Эту команду нужно использовать ответом на сообщение пользователя.")
-        return
-
-    user_id = message.reply_to_message.from_user.id
-    full_name = message.reply_to_message.from_user.full_name
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (user_id,))
-        await db.commit()
-
-    try:
-        await bot.send_message(chat_id=user_id, text="🚫 Вы были заблокированы в этом боте. Ваши предложения теперь игнорируются.")
-    except Exception:
-        pass
-
-    await message.reply(f"Пользователь {full_name} (ID: {user_id}) заблокирован.")
-
-# Команда /unban — только для админов, по ответу на сообщение
-@dp.message(Command("unban"))
-async def cmd_unban(message: Message
-
 # --- Webhook handler ---
 async def handle_webhook(request: web.Request):
     try:
@@ -293,7 +263,7 @@ async def handle_webhook(request: web.Request):
 async def on_startup(app):
     await init_db()
     try:
-        await bot.set_webhook(WEBHOOK_URL)  # <-- Сам ставит вебхук
+        await bot.set_webhook(WEBHOOK_URL)
         logger.info(f"✅ Webhook установлен: {WEBHOOK_URL}")
     except Exception as e:
         logger.exception(f"❌ Не удалось установить webhook: {e}")
