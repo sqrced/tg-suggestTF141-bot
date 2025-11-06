@@ -63,6 +63,54 @@ def admin_keyboard(proposal_id: int) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="❌ Отклонить", callback_data=f"reject:{proposal_id}")
     ]])
 
+# --- Команды бана и разбана пользователей ---
+@dp.message(Command("ban"))
+async def cmd_ban(message: types.Message):
+    # Проверяем, что это ответ на сообщение
+    if not message.reply_to_message:
+        await message.reply("❗ Используй команду /ban как ответ на сообщение пользователя.")
+        return
+
+    # Проверяем, что это админ
+    if str(message.from_user.id) not in ADMIN_IDS:
+        await message.reply("🚫 У вас нет прав для выполнения этой команды.")
+        return
+
+    user_id = message.reply_to_message.from_user.id
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("INSERT OR IGNORE INTO banned_users (user_id) VALUES (?)", (user_id,))
+        await db.commit()
+
+    await message.reply(f"🔒 Пользователь {user_id} заблокирован.")
+    try:
+        await bot.send_message(user_id, "🚫 Вы были заблокированы в боте. Ваши предложения больше не принимаются.")
+    except:
+        pass
+
+
+@dp.message(Command("unban"))
+async def cmd_unban(message: types.Message):
+    if not message.reply_to_message:
+        await message.reply("❗ Используй команду /unban как ответ на сообщение пользователя.")
+        return
+
+    if str(message.from_user.id) not in ADMIN_IDS:
+        await message.reply("🚫 У вас нет прав для выполнения этой команды.")
+        return
+
+    user_id = message.reply_to_message.from_user.id
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM banned_users WHERE user_id = ?", (user_id,))
+        await db.commit()
+
+    await message.reply(f"✅ Пользователь {user_id} разблокирован.")
+    try:
+        await bot.send_message(user_id, "✅ Вы были разблокированы в боте. Теперь вы можете снова отправлять предложения.")
+    except:
+        pass
+        
 # --- /start ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
